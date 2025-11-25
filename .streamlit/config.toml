@@ -1,0 +1,9 @@
+[theme]
+# Sets the default theme to be used. Can be "light" or "dark".
+base = "light"
+
+# You can optionally customize colors further (e.g., primaryColor)
+# primaryColor = "#F63366" 
+# backgroundColor = "#FFFFFF"
+# secondaryBackgroundColor = "#F0F2F6"
+# textColor = "#262730"

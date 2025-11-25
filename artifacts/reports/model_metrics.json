@@ -1,0 +1,33 @@
+{
+    "AUC": 0.874,
+    "class_1_recall": 0.941,
+    "class_1_precision": 0.67,
+    "class_1_f1": 0.782,
+    "top_features": [
+        {
+            "feature": "lag_1_dumping",
+            "score": 0.4392980767356272,
+            "description": "Neglect Signal (Prior 1-month illegal dumping incidents)"
+        },
+        {
+            "feature": "lag_3_avg_rat",
+            "score": 0.24951963606664668,
+            "description": "Chronic Rat Issues (3-month average of sightings)"
+        },
+        {
+            "feature": "lag_1_rat",
+            "score": 0.15413456226778843,
+            "description": "Recent Rat Activity (Prior 1-month count of sightings)"
+        },
+        {
+            "feature": "lag_2_rat",
+            "score": 0.07754732406743821,
+            "description": "lag_2_rat"
+        },
+        {
+            "feature": "year",
+            "score": 0.03788514003012661,
+            "description": "year"
+        }
+    ]
+}

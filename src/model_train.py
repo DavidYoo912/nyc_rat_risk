@@ -1,3 +1,4 @@
+# model_train.py
 import pandas as pd
 import numpy as np
 import os
@@ -125,6 +126,7 @@ def save_model_metrics(model, X_test, y_test, features):
         elif 'lag_1_rat' in f['feature']:
             f['description'] = "Recent Rat Activity (Prior 1-month count of sightings)"
         elif '311_total' in f['feature']:
+            # Note: '311_total' is not in the FEATURES list, but keeping for completeness if the feature set changes
             f['description'] = "Total 311 service requests (proxy for neighborhood activity)"
         else:
             f['description'] = f['feature'] # Fallback (no specific description)
@@ -166,9 +168,12 @@ def train_model():
     # 2. ML Model Prep and Splitting
     print("\n--- 2. ML Model Prep and Sequential Splitting ---")
     
-    # Sort the dataframe chronologically to ensure a true time-series split
-    df_features = df_features.sort_values(by=['year', 'month', 'Block_ID'], ascending=True).reset_index(drop=True)
+    # --- START OF CHANGE 2: Removing reset_index to match notebook logic for strict time-series split ---
+    # Sort chronologically using only year and month to match notebook's explicit method.
+    df_features = df_features.sort_values(by=['year', 'month'], ascending=True) 
+    # --- END OF CHANGE 2 ---
 
+    # Re-create X and y based on the correctly sorted index (matching notebook structure)
     X = df_features[FEATURES].copy()
     y = df_features[TARGET]
 

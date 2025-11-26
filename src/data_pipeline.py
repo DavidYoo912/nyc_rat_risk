@@ -1,3 +1,4 @@
+# data_pipeline.py
 import pandas as pd
 import numpy as np
 import os
@@ -141,8 +142,13 @@ def aggregate_and_engineer(df_incidents_full):
     # Time Features
     df_aggregated_ml['month'] = df_aggregated_ml['Month_Start'].dt.month
     df_aggregated_ml['year'] = df_aggregated_ml['Month_Start'].dt.year
+    
     df_features = df_aggregated_ml.copy()
     
+    # --- START OF CHANGE 1: Ensure chronological and stable sorting before saving ---
+    df_features = df_features.sort_values(by=['year', 'month', 'Block_ID']).reset_index(drop=True)
+    # --- END OF CHANGE 1 ---
+
     # Define Target Variable (Predicting Next Month's Rat Risk)
     # Calculate the 90th percentile of rat sightings as the 'high risk' threshold
     RAT_THRESHOLD = df_features['count_rat_sighting'].quantile(0.90)

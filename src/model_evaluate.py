@@ -4,11 +4,11 @@ import os
 import time
 import pickle
 import warnings
-from IPython.display import display, HTML # Keep HTML for the console output during execution
 import matplotlib.pyplot as plt
 import seaborn as sns
 import folium
 from folium.plugins import MarkerCluster
+from IPython.display import display
 
 # --- Path Setup to handle execution from inside 'src' ---
 # Get the absolute path to the directory containing this script (e.g., /path/to/project/src)
@@ -17,17 +17,15 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.dirname(SCRIPT_DIR)
 
 # --- Configuration (Must match other scripts) ---
+# FIX: Use absolute path construction relative to PROJECT_ROOT
 ARTIFACTS_DIR_ROOT = os.path.join(PROJECT_ROOT, 'artifacts')
+# New variable to point to where the raw features data is stored (as per data_pipeline)
 DATA_PROCESSED_DIR = os.path.join(PROJECT_ROOT, 'data') 
 
 # Organized Artifact Subdirectories for loading/saving
 MODEL_DIR = os.path.join(ARTIFACTS_DIR_ROOT, 'models')
 REPORT_DIR = os.path.join(ARTIFACTS_DIR_ROOT, 'reports')
 SPLIT_DIR = os.path.join(ARTIFACTS_DIR_ROOT, 'data_splits')
-
-# Define Output File Path
-MAP_HTML_FILE_NAME = 'dual_train_test_map.html'
-MAP_HTML_FILE_PATH = os.path.join(REPORT_DIR, MAP_HTML_FILE_NAME)
 
 # Standard Configuration
 RELIABLE_START_DATE = '2022-01-01'
@@ -53,8 +51,7 @@ def load_artifacts():
     artifacts = {}
     
     # Define the path for the raw features file (Input from data_pipeline)
-    FEATURES_FILE_NAME = 'df_features_final.csv'
-    FEATURES_FILE_PATH = os.path.join(DATA_PROCESSED_DIR, FEATURES_FILE_NAME)
+    FEATURES_FILE_PATH = os.path.join(DATA_PROCESSED_DIR, 'df_features_final.csv')
     
     try:
         # Load Features Data from the DATA_PROCESSED_DIR
@@ -72,6 +69,7 @@ def load_artifacts():
             artifacts['best_model'] = pickle.load(f)
             
     except FileNotFoundError as e:
+        # Corrected error message to show the absolute path that failed
         print(f"Error: Required artifact not found: {e}. Ensure data_pipeline.py and model_train.py were run successfully and files are in the correct subdirectories.")
         return None
 
@@ -83,7 +81,8 @@ def load_artifacts():
     artifacts['df_test_performance'].dropna(subset=['Block_ID'], inplace=True)
     # --- END FIX ---
     
-    # Calculate Lat/Lon for mapping purposes 
+    # Calculate Lat/Lon for mapping purposes (These lines are now safe)
+    # Use .loc to avoid SettingWithCopyWarning
     artifacts['df_features'].loc[:, 'Lat'] = artifacts['df_features']['Block_ID'].apply(lambda x: float(x.split('_')[0]))
     artifacts['df_features'].loc[:, 'Lon'] = artifacts['df_features']['Block_ID'].apply(lambda x: float(x.split('_')[1]))
 
@@ -181,42 +180,56 @@ def generate_feature_importance(best_model):
 
 def generate_dual_map(artifacts, n_samples=5000):
     """
-    Generates the dual map visualization and saves it as an HTML file.
+    Generates the dual map HTML string: Split Map and Performance Map, including legends.
     """
     print("\n--- 4. Generating Dual Train/Test/Performance Map ---")
     
     df_features = artifacts['df_features']
-    df_test_performance_full = artifacts['df_test_performance']
+    df_test_performance = artifacts['df_test_performance']
     split_index = artifacts['split_index']
     
     # --- Data Setup for Maps ---
     df_train_locations = df_features.iloc[:split_index].copy()
+    
+    # Calculate Outcome
+    df_test_performance.loc[:, 'Outcome'] = np.where(
+        (df_test_performance['TARGET_HIGH_RISK'] == 1) & (df_test_performance['Predicted_Risk'] == 1), 'TP',
+        np.where(
+            (df_test_performance['TARGET_HIGH_RISK'] == 0) & (df_test_performance['Predicted_Risk'] == 1), 'FP',
+            np.where(
+                (df_test_performance['TARGET_HIGH_RISK'] == 1) & (df_test_performance['Predicted_Risk'] == 0), 'FN',
+                'TN'
+            )
+        )
+    )
     map_center = [df_features['Lat'].mean(), df_features['Lon'].mean()]
 
     # --- MAP 1: Train/Test Split Sample (Sampling TIME-STEPS) ---
     
-    total_sample_m1 = n_samples
-    train_sample_size_m1 = int(total_sample_m1 * 0.8)
-    test_sample_size_m1 = total_sample_m1 - train_sample_size_m1
+    # Calculate sizes based on n_samples (80/20 split)
+    train_sample_size_m1 = int(n_samples * 0.8)
+    test_sample_size_m1 = n_samples - train_sample_size_m1
     
     np.random.seed(42)
     
+    # Sample training points (time-steps)
     df_train_sample = df_train_locations.sample(
         n=min(len(df_train_locations), train_sample_size_m1), replace=False
     )[['Lat', 'Lon']]
 
-    df_test_sample_performance = df_test_performance_full.sample(
-        n=min(len(df_test_performance_full), test_sample_size_m1), replace=False
-    ).copy()
+    # Sample test points (time-steps) directly from the performance DataFrame
+    df_test_sample_performance = df_test_performance.sample(
+        n=min(len(df_test_performance), test_sample_size_m1), replace=False
+    )
     
     df_test_sample_m1 = df_test_sample_performance[['Lat', 'Lon']]
     
     actual_train_sample_size = len(df_train_sample)
-    actual_test_sample_size = len(df_test_sample_m1)
+    actual_test_sample_size = len(df_test_sample_m1) # This is the N for Map 2
     
-    # --- Map 1: Plotting ---
     m1 = folium.Map(location=map_center, zoom_start=11, tiles='cartodbpositron')
     
+    # Add data points
     for _, row in df_train_sample.iterrows():
         folium.Circle(location=[row['Lat'], row['Lon']], radius=5, color='blue', fill=True, fill_color='blue', fill_opacity=0.6, tooltip="Train Point").add_to(m1)
     for _, row in df_test_sample_m1.iterrows():
@@ -231,46 +244,26 @@ def generate_dual_map(artifacts, n_samples=5000):
         </div>
         '''
     m1.get_root().html.add_child(folium.Element(legend_html_m1))
-    folium.LayerControl().add_to(m1)
-    m1.get_root().width = '100%'
-    m1.get_root().height = '550px'
-
-    # ----------------------------------------------------------------------
-    # --- MAP 2: PERFORMANCE CHECK ---
-    # ----------------------------------------------------------------------
-
-    # Calculate prediction outcomes on the sampled test points
-    df_test_sample_performance['Outcome'] = np.where(
-        (df_test_sample_performance['TARGET_HIGH_RISK'] == 1) & (df_test_sample_performance['Predicted_Risk'] == 1), 'TP',
-        np.where(
-            (df_test_sample_performance['TARGET_HIGH_RISK'] == 0) & (df_test_sample_performance['Predicted_Risk'] == 1), 'FP',
-            np.where(
-                (df_test_sample_performance['TARGET_HIGH_RISK'] == 1) & (df_test_sample_performance['Predicted_Risk'] == 0), 'FN',
-                'TN'
-            )
-        )
-    )
-
-    m2 = folium.Map(location=map_center, zoom_start=11, tiles='cartodbpositron')
-
-    # Filter to keep only performance points (non-True Negatives)
-    df_map2_final_sample = df_test_sample_performance[
-        df_test_sample_performance['Outcome'] != 'TN'
-    ].copy()
-
+    
+    # --- MAP 2: Performance Check (Non-TN Outcomes) ---
+    
+    # Filter to exclude True Negatives ONLY from the sampled test data.
+    df_map2_final_sample = df_test_sample_performance[df_test_sample_performance['Outcome'] != 'TN'].copy()
+    
+    # Get counts for title/legend
     tp_count = len(df_map2_final_sample[df_map2_final_sample['Outcome'] == 'TP'])
     fp_count = len(df_map2_final_sample[df_map2_final_sample['Outcome'] == 'FP'])
     fn_count = len(df_map2_final_sample[df_map2_final_sample['Outcome'] == 'FN'])
-    total_performance_points_m2 = tp_count + fp_count + fn_count
+    total_performance_points_m2 = tp_count + fp_count + fn_count # The number of points actually plotted
 
-    # --- JavaScript Dominance Color Function (Same as before) ---
+    # Custom Cluster Icon Logic (remains the same)
     js_icon_create_function = """
         function(cluster) {
             var markers = cluster.getAllChildMarkers();
             var counts = {'TP': 0, 'FP': 0, 'FN': 0};
-            // ... (JavaScript code remains the same)
-            var dominantColor = 'darkgreen'; 
+            var dominantColor = 'green'; // Default color
 
+            // Count the outcomes within the cluster
             markers.forEach(function(marker) {
                 var outcome = marker.options.icon.options.html.match(/data-outcome="([^"]*)"/);
                 if (outcome) {
@@ -279,21 +272,27 @@ def generate_dual_map(artifacts, n_samples=5000):
             });
 
             var total = counts.TP + counts.FP + counts.FN;
+            
+            // Define Ambiguity Tolerance (e.g., within 10% of each other, relative to total)
             var tolerance = 0.10; 
             
+            // --- 1. Check for TP/FP Ambiguity OR FN Dominance (Orange) ---
             if (Math.abs(counts.TP - counts.FP) / total < tolerance && total > 0 && (counts.TP + counts.FP > counts.FN)) {
-                dominantColor = 'orange'; 
-            }
+                dominantColor = 'orange'; // Orange for Ambiguity
+            } 
             else if (counts.FN > counts.TP && counts.FN > counts.FP) {
-                dominantColor = 'orange'; 
+                dominantColor = 'orange'; // Orange for FN dominance (Simplified)
             }
+            // --- 2. Check for FP Dominance (Red) ---
             else if (counts.FP > counts.TP && counts.FP > counts.FN) {
                 dominantColor = 'red';
             } 
+            // --- 3. Default to TP Dominance (Green) ---
             else { 
                 dominantColor = 'green';
             }
             
+            // Return the custom L.DivIcon with the dominant color
             return L.divIcon({ 
                 html: '<div style="background-color:' + dominantColor + '; color: white; border-radius: 50%; width: 40px; height: 40px; line-height: 40px; text-align: center; font-weight: bold;">' + cluster.getChildCount() + '</div>',
                 className: 'marker-cluster',
@@ -302,41 +301,20 @@ def generate_dual_map(artifacts, n_samples=5000):
         }
     """
 
-    dominance_cluster = MarkerCluster(
-        name="Test Set Performance (Dominance Color)",
-        icon_create_function=js_icon_create_function
-    ).add_to(m2)
-
-
-    # Plot markers
+    m2 = folium.Map(location=map_center, zoom_start=11, tiles='cartodbpositron')
+    dominance_cluster = MarkerCluster(icon_create_function=js_icon_create_function).add_to(m2)
     color_map = {'TP': 'green', 'FP': 'red', 'FN': 'orange'}
     icon_map = {'TP': 'check', 'FP': 'times', 'FN': 'exclamation-triangle'}
 
-    for idx, row in df_map2_final_sample.iterrows():
+    for _, row in df_map2_final_sample.iterrows():
         outcome = row['Outcome']
         color = color_map.get(outcome)
         icon_type = icon_map.get(outcome)
-        
-        icon_html = f"""
-        <div style="text-align: center;" data-outcome="{outcome}">
-            <i class="fa fa-{icon_type} fa-2x" style="color:{color}"></i>
-        </div>
-        """
-        
+        icon_html = f"""<div style="text-align: center;" data-outcome="{outcome}"><i class="fa fa-{icon_type} fa-2x" style="color:{color}"></i></div>"""
         icon = folium.DivIcon(html=icon_html, icon_size=(24, 24))
+        folium.Marker(location=[row['Lat'], row['Lon']], icon=icon, tooltip=f"Outcome: {outcome}").add_to(dominance_cluster)
         
-        folium.Marker(
-            location=[row['Lat'], row['Lon']],
-            icon=icon,
-            tooltip=f"Outcome: {outcome}"
-        ).add_to(dominance_cluster)
-
-
-    # ----------------------------------------------------------------------
-    # --- LEGENDS ---
-    # ----------------------------------------------------------------------
-
-    # Marker Icon Key (Bottom Left of Map 2)
+    # Add Map 2 Legends (remains the same)
     legend_icon_key = f'''
         <div style="position: fixed; bottom: 50px; left: 50px; width: 220px; height: 100px; border:2px solid grey; z-index:9999; font-size:12px; background-color: white; opacity: 0.9;">
           &nbsp; <b>MARKER ICON KEY</b> <br>
@@ -347,7 +325,6 @@ def generate_dual_map(artifacts, n_samples=5000):
         '''
     m2.get_root().html.add_child(folium.Element(legend_icon_key))
 
-    # Cluster Color Key (Bottom Right of Map 2 - Simplified)
     legend_cluster_key = f'''
         <div style="position: fixed; bottom: 50px; right: 20px; width: 140px; height: 100px; border:2px solid grey; z-index:9999; font-size:12px; background-color: white; opacity: 0.9;">
           &nbsp; <b>CLUSTER COLORS</b> <br>
@@ -359,82 +336,51 @@ def generate_dual_map(artifacts, n_samples=5000):
     m2.get_root().html.add_child(folium.Element(legend_cluster_key))
 
 
-    m2.get_root().width = '100%'
-    m2.get_root().height = '550px'
-
-
-    # ----------------------------------------------------------------------
-    # --- 5. COMBINE MAPS AND SAVE AS HTML FILE ---
-    # ----------------------------------------------------------------------
-    
-    # Render maps to HTML strings
+    # Combine maps into a single HTML structure for display/saving
     m1_html = m1._repr_html_()
     m2_html = m2._repr_html_()
+    
+    # --- Corrected Titles reflecting time-step sampling ---
+    map1_title = f"Map 1: Chronological Train/Test Split (80/20 split)"
+    map1_subtitle = f"Plotted: N={n_samples} Samples"
+    map2_title = f"Map 2: Model Performance on Test Set"
+    map2_subtitle = f"Plotted: {total_performance_points_m2} Non-True Negative Outcomes from the Test Set"
 
-    map1_title = f"Map 1: Chronological Train/Test Split (80/20 Sample: N={total_sample_m1})"
-    map2_title = f"Map 2: Model Performance on Test Set (N={actual_test_sample_size} Test Time-Steps from Map 1)"
-    map2_subtitle = f"Plotted: {total_performance_points_m2} Non-True Negative Outcomes"
 
-    # Assemble the final HTML structure
     final_html = f"""
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <title>Dual Train/Test and Performance Map</title>
-        <meta charset="utf-8" />
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <link rel="stylesheet" href="https://maxcdn.bootstrapcdn.com/font-awesome/4.7.0/css/font-awesome.min.css">
-    </head>
-    <body>
-        <h1 style="text-align: center;">NYC Rodent Risk Prediction: Geospatial Split and Performance</h1>
-        <div style="display: flex; justify-content: space-around; width: 100%;">
-            <div style="width: 50%; padding-right: 5px;">
-                <h3>{map1_title}</h3>
-                {m1_html}
-            </div>
-            <div style="width: 50%; padding-left: 5px;">
-                <h3>{map2_title}</h3>
-                <p style="margin-top: -15px; margin-bottom: 5px; font-size: 14px; color: #555;">{map2_subtitle}</p>
-                {m2_html}
-            </div>
+    <div style="display: flex; justify-content: space-around; width: 100%;">
+        <div style="width: 50%; padding-right: 5px;">
+            <h3>{map1_title}</h3>
+            <p style="margin-top: -15px; margin-bottom: 5px; font-size: 14px; color: #555;">{map1_subtitle}</p>
+            {m1_html}
         </div>
-        <p style="text-align: center; margin-top: 20px; font-size: 10px; color: #888;">Map generated by model_evaluate.py.</p>
-    </body>
-    </html>
+        <div style="width: 50%; padding-left: 5px;">
+            <h3>{map2_title}</h3>
+            <p style="margin-top: -15px; margin-bottom: 5px; font-size: 14px; color: #555;">{map2_subtitle}</p>
+            {m2_html}
+        </div>
+    </div>
     """
     
-    # Save the HTML file to the specified path
-    with open(MAP_HTML_FILE_PATH, 'w') as f:
+    # Save the dual map HTML to the reports directory
+    with open(os.path.join(REPORT_DIR, 'dual_train_test_map.html'), 'w') as f:
         f.write(final_html)
+    print(f"Saved Dual Train/Test/Performance Map to {REPORT_DIR}/dual_train_test_map.html")
 
-    print(f"\nSaved dual map to: {MAP_HTML_FILE_PATH}")
-    
-    # Optional: Display the HTML in the console output environment if available
-    try:
-        display(HTML(final_html))
-    except NameError:
-        pass # If run in a standard terminal, ignore the display call
-
-    return df_map2_final_sample
 
 if __name__ == '__main__':
-    start_total = time.time()
+    start_time = time.time()
     
-    # 1. Load Data and Artifacts
+    # 1. Load Artifacts
     artifacts = load_artifacts()
     if artifacts is None:
         exit()
-
-    # 2. Generate and Save EDA Charts
+        
+    # 2. Generate Evaluation Artifacts
     generate_eda_charts(artifacts['df_features'])
-
-    # 3. Generate and Save Feature Importance
     generate_feature_importance(artifacts['best_model'])
-
-    # 4. Generate and Save Map
-    # The output variable is still returned, but the file is now saved inside the function
-    df_map2_final_sample = generate_dual_map(artifacts, n_samples=5000)
-
-    end_total = time.time()
+    generate_dual_map(artifacts)
+    
+    end_time = time.time()
     print(f"\n--- Evaluation Complete ---")
-    print(f"Total evaluation time: {end_total - start_total:.2f} seconds.")
+    print(f"Total evaluation time: {end_time - start_time:.2f} seconds.")

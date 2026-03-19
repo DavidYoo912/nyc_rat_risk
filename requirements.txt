@@ -1,0 +1,13 @@
+pandas
+numpy
+scikit-learn
+tqdm
+matplotlib
+seaborn
+folium
+streamlit
+python-dateutil
+xgboost
+ipykernel
+tabulate
+plotly

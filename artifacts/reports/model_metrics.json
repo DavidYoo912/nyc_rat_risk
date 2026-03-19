@@ -1,33 +1,33 @@
 {
-    "AUC": 0.874,
-    "class_1_recall": 0.941,
-    "class_1_precision": 0.67,
-    "class_1_f1": 0.782,
+    "AUC": 0.885,
+    "class_1_recall": 0.857,
+    "class_1_precision": 0.751,
+    "class_1_f1": 0.8,
     "top_features": [
         {
+            "feature": "lag_1_rat",
+            "score": 0.26001982882595687,
+            "description": "Recent Rat Activity (Prior 1-month count of sightings)"
+        },
+        {
             "feature": "lag_1_dumping",
-            "score": 0.4392980767356272,
+            "score": 0.22174878151155042,
             "description": "Neglect Signal (Prior 1-month illegal dumping incidents)"
         },
         {
             "feature": "lag_3_avg_rat",
-            "score": 0.24951963606664668,
-            "description": "Chronic Rat Issues (3-month average of sightings)"
-        },
-        {
-            "feature": "lag_1_rat",
-            "score": 0.15413456226778843,
-            "description": "Recent Rat Activity (Prior 1-month count of sightings)"
+            "score": 0.20303883323428612,
+            "description": "Recent Chronic Rat Issues (3-month rolling average)"
         },
         {
             "feature": "lag_2_rat",
-            "score": 0.07754732406743821,
+            "score": 0.1048881724135074,
             "description": "lag_2_rat"
         },
         {
-            "feature": "year",
-            "score": 0.03788514003012661,
-            "description": "year"
+            "feature": "lag_12_avg_rat",
+            "score": 0.10461402661708406,
+            "description": "Chronic Rat Issues (12-month rolling average)"
         }
     ]
 }

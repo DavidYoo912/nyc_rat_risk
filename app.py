@@ -265,6 +265,22 @@ def info_html(content_html: str) -> str:
     )
 
 
+@st.cache_data
+def attach_coords(df: pd.DataFrame) -> pd.DataFrame:
+    """Parse Lat/Lon from Block_ID (format: 'lat_lon') and return rows where both are valid."""
+    def _parse(bid):
+        try:
+            parts = str(bid).split('_')
+            return float(parts[0]), float(parts[1])
+        except Exception:
+            return (None, None)
+    parsed = df['Block_ID'].map(_parse)
+    df = df.copy()
+    df['Lat'] = parsed.map(lambda x: x[0])
+    df['Lon'] = parsed.map(lambda x: x[1])
+    return df.dropna(subset=['Lat', 'Lon'])
+
+
 def refresh_prediction():
     """Re-runs model_predict.py using the same Python interpreter as the app."""
     predict_script = os.path.join(APP_DIR, 'src', 'model_predict.py')
@@ -591,6 +607,74 @@ def main():
                     unsafe_allow_html=True)
 
         if df_features is not None:
+            # ── EDA Map ────────────────────────────────────────────────────
+            st.markdown('<div class="section-label" style="margin-top:0.5rem">Activity Density Map</div>',
+                        unsafe_allow_html=True)
+
+            df_coords = attach_coords(df_features)
+            years_avail = sorted(df_coords['year'].dropna().astype(int).unique().tolist())
+
+            selected_year = st.slider(
+                "Select year", min_value=min(years_avail), max_value=max(years_avail),
+                value=max(years_avail), step=1,
+            )
+
+            df_yr = (
+                df_coords[df_coords['year'] == selected_year]
+                .groupby(['Lat', 'Lon'], as_index=False)
+                .agg(rat_count=('count_rat_sighting', 'sum'),
+                     dump_count=('count_illegal_dumping', 'sum'))
+            )
+
+            # Center on Midtown Manhattan; clip color scale at 90th pct so mid-density
+            # areas get saturated color rather than washing out to near-white
+            _MAP_CENTER = {"lat": 40.754, "lon": -73.984}
+            _MAP_CFG    = {"scrollZoom": True}
+            _MAP_LAYOUT = dict(
+                margin={"r": 0, "t": 35, "l": 0, "b": 0},
+                height=500,
+                coloraxis_showscale=False,
+                paper_bgcolor="#F8FAFC",
+            )
+
+            col_rat, col_dump = st.columns(2)
+
+            with col_rat:
+                df_rat = df_yr[df_yr['rat_count'] > 0]
+                rat_cap = float(df_rat['rat_count'].quantile(0.90)) or 1.0
+                fig_rat = px.density_mapbox(
+                    df_rat, lat='Lat', lon='Lon', z='rat_count',
+                    radius=18, center=_MAP_CENTER, zoom=11,
+                    mapbox_style='carto-positron',
+                    color_continuous_scale='Reds',
+                    range_color=[0, rat_cap],
+                    title=f'🐀 Rat Sightings — {selected_year}',
+                )
+                fig_rat.update_layout(**_MAP_LAYOUT)
+                st.plotly_chart(fig_rat, use_container_width=True, config=_MAP_CFG)
+
+            with col_dump:
+                df_dump = df_yr[df_yr['dump_count'] > 0]
+                dump_cap = float(df_dump['dump_count'].quantile(0.90)) or 1.0
+                fig_dump = px.density_mapbox(
+                    df_dump, lat='Lat', lon='Lon', z='dump_count',
+                    radius=18, center=_MAP_CENTER, zoom=11,
+                    mapbox_style='carto-positron',
+                    color_continuous_scale='Blues',
+                    range_color=[0, dump_cap],
+                    title=f'🗑️ Illegal Dumping — {selected_year}',
+                )
+                fig_dump.update_layout(**_MAP_LAYOUT)
+                st.plotly_chart(fig_dump, use_container_width=True, config=_MAP_CFG)
+
+            st.caption(
+                f"Density of rat sightings (left) and illegal dumping complaints (right) across NYC blocks in {selected_year}. "
+                "Darker zones indicate higher complaint volume. Compare the two maps to spot where both signals overlap — "
+                "those areas are the model's strongest risk targets."
+            )
+
+            st.markdown("<div style='margin-top:1.5rem'></div>", unsafe_allow_html=True)
+
             # Chart 1 — Monthly Trend (dual-axis)
             df_monthly = (
                 df_features

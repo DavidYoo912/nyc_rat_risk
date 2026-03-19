@@ -281,6 +281,163 @@ def attach_coords(df: pd.DataFrame) -> pd.DataFrame:
     return df.dropna(subset=['Lat', 'Lon'])
 
 
+@st.cache_data(show_spinner="Fetching street addresses...")
+def add_address_column(df: pd.DataFrame) -> pd.DataFrame:
+    """Reverse geocode Lat/Lon columns to human-readable addresses via NYC GeoSearch API."""
+    import urllib.request, json
+
+    def _reverse_geocode(lat, lon) -> str:
+        try:
+            url = f"https://geosearch.planninglabs.nyc/v2/reverse?point.lat={lat}&point.lon={lon}&size=1"
+            with urllib.request.urlopen(url, timeout=3) as resp:
+                data = json.loads(resp.read())
+            props = data["features"][0]["properties"]
+            name = props.get("name", "")
+            borough = props.get("borough", "")
+            if name and borough:
+                return f"{name}, {borough}"
+            return name or "Address unavailable"
+        except Exception:
+            return "Address unavailable"
+
+    df = df.copy()
+    df.insert(2, "Address", [_reverse_geocode(row["Lat"], row["Lon"]) for _, row in df.iterrows()])
+    return df
+
+
+def render_map_with_interactive_table(map_html: str, groups: dict) -> str:
+    """Inject an interactive Top 10 overlay panel with borough dropdown into the Folium map HTML.
+
+    groups: OrderedDict of {label: DataFrame} — first key is shown by default ("Overall").
+    Each DataFrame must have Lat, Lon, Rank, Risk Score (P=High), and optionally Address columns.
+    """
+    import re, json
+
+    m = re.search(r'var (map_[a-f0-9]+) = L\.map', map_html)
+    if not m:
+        return map_html  # Folium variable not found — return unchanged
+    map_var = m.group(1)
+
+    def _rows(df):
+        out = []
+        for _, row in df.iterrows():
+            lat = float(row.get('Lat', 0))
+            lon = float(row.get('Lon', 0))
+            addr = str(row['Address']) if 'Address' in row else f"{lat:.4f}, {lon:.4f}"
+            try:
+                score = f"{float(row.get('Risk Score (P=High)', 0)):.3f}"
+            except Exception:
+                score = ''
+            out.append({'rank': int(row.get('Rank', 0)), 'addr': addr,
+                        'lat': lat, 'lon': lon, 'score': score})
+        return out
+
+    data_json   = json.dumps({g: _rows(df) for g, df in groups.items()})
+    options_html = ''.join(
+        f'<option value="{g}">{g}</option>' for g in groups
+    )
+
+    inject = f"""
+<style>
+#rat-top10{{
+    position:absolute;top:10px;right:10px;z-index:1000;
+    background:rgba(255,255,255,0.96);border-radius:8px;
+    padding:10px 12px;box-shadow:0 2px 14px rgba(0,0,0,0.28);
+    width:290px;font-family:-apple-system,BlinkMacSystemFont,sans-serif;
+    font-size:12px;
+}}
+#rat-top10 h4{{margin:0 0 6px 0;font-size:13px;color:#0F172A;
+    border-bottom:1px solid #e2e8f0;padding-bottom:5px;}}
+#borough-select{{
+    width:100%;margin-bottom:7px;padding:4px 6px;border-radius:5px;
+    border:1px solid #cbd5e1;font-size:12px;color:#334155;
+    background:#f8fafc;cursor:pointer;
+}}
+#rat-top10 table{{width:100%;border-collapse:collapse;}}
+#rat-top10 tr{{cursor:pointer;transition:background 0.12s;}}
+#rat-top10 tr:hover{{background:#FEF3C7;}}
+#rat-top10 tr.sel{{background:#FED7AA;}}
+#rat-top10 td{{padding:4px 5px;vertical-align:middle;}}
+#rat-top10 .rc{{font-weight:700;color:#DC2626;width:22px;text-align:center;}}
+#rat-top10 .ac{{color:#334155;max-width:175px;overflow:hidden;
+    text-overflow:ellipsis;white-space:nowrap;}}
+#rat-top10 .sc{{color:#64748b;text-align:right;width:38px;}}
+#rat-top10 thead td{{font-weight:600;color:#94a3b8;font-size:10px;
+    text-transform:uppercase;letter-spacing:.05em;padding-bottom:3px;}}
+</style>
+<div id="rat-top10">
+  <h4>🐀 Top 10 High-Risk Blocks</h4>
+  <div style="font-size:10px;color:#94a3b8;margin:-4px 0 7px 0;">Top Recommended Blocks to Inspect</div>
+  <select id="borough-select" onchange="switchGroup(this.value)">{options_html}</select>
+  <table>
+    <thead><tr><td class="rc">#</td><td class="ac">Address</td><td class="sc">Score</td></tr></thead>
+    <tbody id="top10-tbody"></tbody>
+  </table>
+</div>
+<script>
+(function(){{
+  var _groups  = {data_json};
+  var _lookup  = {{}};
+  var _built   = false;
+  var _selRow  = null;
+
+  function esc(s){{
+    return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;')
+                    .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  }}
+
+  function buildLookup(){{
+    if(_built) return;
+    {map_var}.eachLayer(function(layer){{
+      if(layer.getLatLng){{
+        var ll = layer.getLatLng();
+        _lookup[ll.lat.toFixed(4)+'_'+ll.lng.toFixed(4)] = layer;
+      }}
+    }});
+    _built = true;
+  }}
+
+  function renderGroup(name){{
+    var rows = _groups[name] || [];
+    var tbody = document.getElementById('top10-tbody');
+    tbody.innerHTML = '';
+    if(_selRow){{ _selRow = null; }}
+    rows.forEach(function(r){{
+      var tr = document.createElement('tr');
+      tr.innerHTML =
+        '<td class="rc">'+r.rank+'</td>'+
+        '<td class="ac" title="'+esc(r.addr)+'">'+esc(r.addr)+'</td>'+
+        '<td class="sc">'+r.score+'</td>';
+      (function(lat,lon){{
+        tr.onclick = function(){{ clickMapMarker(lat,lon,tr); }};
+      }})(r.lat, r.lon);
+      tbody.appendChild(tr);
+    }});
+  }}
+
+  window.switchGroup = function(name){{ renderGroup(name); }};
+
+  window.clickMapMarker = function(lat, lon, row){{
+    buildLookup();
+    var key = parseFloat(lat).toFixed(4)+'_'+parseFloat(lon).toFixed(4);
+    var marker = _lookup[key];
+    if(marker){{
+      {map_var}.setView([lat, lon], 14, {{animate:true}});
+      setTimeout(function(){{ if(marker.openPopup) marker.openPopup(); }}, 350);
+    }}
+    if(_selRow) _selRow.classList.remove('sel');
+    row.classList.add('sel');
+    _selRow = row;
+  }};
+
+  setTimeout(buildLookup, 600);
+  renderGroup(Object.keys(_groups)[0]);
+}})();
+</script>
+"""
+    return map_html.replace('</body>', inject + '\n</body>')
+
+
 def refresh_prediction():
     """Re-runs model_predict.py using the same Python interpreter as the app."""
     predict_script = os.path.join(APP_DIR, 'src', 'model_predict.py')
@@ -314,6 +471,15 @@ def main():
         try:
             df_inspection = pd.read_csv(latest_csv_path)
             num_blocks = len(df_inspection)
+            try:
+                df_inspection = add_address_column(df_inspection)
+                _valid_boroughs = {'Manhattan', 'Brooklyn', 'Queens', 'Bronx', 'Staten Island'}
+                df_inspection['Borough'] = (
+                    df_inspection['Address'].str.rsplit(', ', n=1).str[-1]
+                    .where(lambda s: s.isin(_valid_boroughs))
+                )
+            except Exception:
+                pass  # graceful fallback: df_inspection stays without Address/Borough columns
         except Exception:
             pass
 
@@ -404,7 +570,17 @@ def main():
 
         prediction_map_html = load_html_content(PATHS['prediction_map'])
         if prediction_map_html:
-            st.components.v1.html(prediction_map_html, height=680, scrolling=False)
+            if df_inspection is not None:
+                _groups = {'Overall': df_inspection.head(10)}
+                if 'Borough' in df_inspection.columns:
+                    for _b in ['Manhattan', 'Brooklyn', 'Queens', 'Bronx', 'Staten Island']:
+                        _sub = df_inspection[df_inspection['Borough'] == _b].head(10)
+                        if len(_sub) > 0:
+                            _groups[_b] = _sub
+                combined_html = render_map_with_interactive_table(prediction_map_html, _groups)
+            else:
+                combined_html = prediction_map_html
+            st.components.v1.html(combined_html, height=680, scrolling=False)
 
         st.markdown("<div style='margin-top:0.75rem'></div>", unsafe_allow_html=True)
         st.markdown(info_html(
@@ -421,25 +597,21 @@ def main():
         st.markdown("<div style='margin-top:1rem'></div>", unsafe_allow_html=True)
 
         if df_inspection is not None:
-            dl_col, preview_col = st.columns([1, 3])
+            dl_col, _ = st.columns([1, 3])
             with dl_col:
                 st.markdown('<div class="section-label">Download</div>', unsafe_allow_html=True)
-                with open(latest_csv_path, "rb") as fh:
-                    st.download_button(
-                        label="⬇ Download Inspection List (.csv)",
-                        data=fh,
-                        file_name=os.path.basename(latest_csv_path),
-                        mime="text/csv",
-                        use_container_width=True,
-                        type="primary",
-                    )
-            with preview_col:
-                st.markdown('<div class="section-label">Top 10 High-Risk Blocks</div>', unsafe_allow_html=True)
-                st.dataframe(df_inspection.head(10), use_container_width=True, hide_index=True)
+                csv_bytes = df_inspection.to_csv(index=False).encode("utf-8")
+                st.download_button(
+                    label="⬇ Download Inspection List (.csv)",
+                    data=csv_bytes,
+                    file_name=os.path.basename(latest_csv_path),
+                    mime="text/csv",
+                    use_container_width=True,
+                    type="primary",
+                )
             st.caption(
-                "💡 The inspection list ranks the top 200 blocks by risk score. Start from Rank 1 and work down. "
-                "Each row shows how many rat sightings and illegal dumping complaints that block had last month — "
-                "the key signals the model uses."
+                "💡 Click any row in the Top 10 panel on the map to jump to that block. "
+                "The inspection list ranks the top 200 blocks by risk score — download it to assign field teams."
             )
         else:
             st.warning("Inspection list CSV not found. Run the model pipeline to generate high-risk blocks.")
